@@ -1,0 +1,42 @@
+# Kyverno admission policy: pods in the fraudguard namespace may only run
+# images signed by this repository's GitHub Actions workflow (keyless Cosign).
+# An image pushed by hand, or built anywhere else, is rejected at admission.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: fraudguard-verify-image-signature
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: require-signed-fraudguard-image
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["fraudguard"]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/kamalesansam/fraudguard*"
+          mutateDigest: true
+          verifyDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/kamalesansam/fraudguard/.github/workflows/ci.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - type: https://github.com/kamalesansam/fraudguard/model-manifest/v1
+              attestors:
+                - entries:
+                    - keyless:
+                        subject: "https://github.com/kamalesansam/fraudguard/.github/workflows/ci.yml@refs/heads/main"
+                        issuer: "https://token.actions.githubusercontent.com"
+              conditions:
+                - all:
+                    # Only admit models whose recorded gate metrics clear the bar.
+                    - key: "{{ metrics.pr_auc }}"
+                      operator: GreaterThanOrEquals
+                      value: 0.70

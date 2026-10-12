@@ -1,0 +1,373 @@
+# Secure ML delivery pipeline.
+#
+#   test ─┐
+#   sast ─┤
+#   sca  ─┼─> pipeline (DVC: validate -> train -> quality gate -> package)
+#   secrets┤        │
+#   iac  ─┘        └─> container (build -> Trivy -> SBOM -> smoke test -> ZAP DAST)
+#                                 │
+#                                 └─> publish (main only: push -> Cosign sign -> attest SBOM + model manifest)
+#
+# Every third-party action is pinned to a full commit SHA. Mutable tags are how
+# the March 2026 trivy-action compromise (CVE-2026-33634) reached CI secrets.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: fraudguard
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  test:
+    name: lint + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen --all-extras
+      - name: ruff
+        run: |
+          uv run ruff check . --output-format github
+          uv run ruff format --check .
+      - name: pytest
+        run: uv run pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=85
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  sast:
+    name: SAST (Bandit + Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - name: bandit
+        run: uvx --from 'bandit[sarif]==1.9.4' bandit -r src -ll -f sarif -o bandit.sarif
+      - name: semgrep rule tests
+        run: uvx semgrep@1.180.0 --test --config .semgrep/ml-supply-chain.yml .semgrep/ml-supply-chain.py
+      - name: semgrep scan (p/python + custom ML supply-chain rules)
+        run: >
+          uvx semgrep@1.180.0 scan --metrics=off --error
+          --config p/python --config .semgrep
+          --sarif --output semgrep.sarif
+      - name: upload bandit SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+      - name: upload semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  sca:
+    name: SCA (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - name: audit inference dependencies (no exceptions allowed)
+        run: |
+          uv export --frozen --no-dev --extra serve --no-emit-project --format requirements-txt -o req-serve.txt
+          uvx pip-audit==2.10.1 -r req-serve.txt --disable-pip --require-hashes --strict
+      - name: audit pipeline dependencies (documented exceptions only)
+        run: |
+          uv export --frozen --no-dev --all-extras --no-emit-project --format requirements-txt -o req-all.txt
+          ignores=$(grep -vE '^\s*(#|$)' security/pip-audit-ignore.txt | sed 's/^/--ignore-vuln /' | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          uvx pip-audit==2.10.1 -r req-all.txt --disable-pip --require-hashes $ignores
+
+  secrets:
+    name: secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: install gitleaks (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum --check
+          tar -xzf gitleaks.tgz gitleaks
+      - name: scan full git history
+        run: ./gitleaks git --redact --verbose --exit-code 1 .
+
+  iac:
+    name: IaC scan (Trivy config + kustomize)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: render kustomize overlays
+        run: |
+          kubectl kustomize k8s/base > /dev/null
+          kubectl kustomize k8s/overlays/prod > /dev/null
+      - name: trivy config (Dockerfile, Kubernetes, compose)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: sarif
+          output: trivy-config.sarif
+      - name: upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+  pipeline:
+    name: ML pipeline + quality gate
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen --all-extras
+      - name: dvc repro (validate -> train -> evaluate gate -> package)
+        run: uv run dvc repro
+      - name: reproducibility check (retrain must give the same SHA-256)
+        run: |
+          uv run fraudguard train --model-dir rebuild
+          expected=$(jq -r .model.sha256 artifacts/model/manifest.json)
+          actual=$(sha256sum rebuild/model.skops | cut -d' ' -f1)
+          echo "manifest: $expected"; echo "rebuild:  $actual"
+          test "$expected" = "$actual"
+      - name: gate summary
+        run: |
+          {
+            echo "### Model quality gate"
+            echo '```json'
+            jq '{roc_auc, pr_auc, precision, recall, slice_recall, gate}' reports/metrics.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model
+          path: |
+            artifacts/model/model.skops
+            artifacts/model/manifest.json
+            artifacts/model/MODEL_CARD.md
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports
+          path: reports/
+          retention-days: 30
+
+  container:
+    name: image build, scan, SBOM, DAST
+    needs: [pipeline, sast, sca, secrets, iac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      CI_API_KEY: ci-dast-key-not-a-secret
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model
+          path: artifacts/model
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:ci
+          provenance: false
+      - name: trivy image scan (gate on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: trivy image report (SARIF, all severities)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: sarif
+          output: trivy-image.sarif
+          skip-setup-trivy: true
+      - name: upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+      - name: SBOM (Syft, SPDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.IMAGE_NAME }}:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
+          upload-release-assets: false
+      - name: start container (read-only rootfs, no capabilities)
+        # DAST-only config: OpenAPI exposed so ZAP can discover routes, and the
+        # rate limit lifted so the scanner tests input handling instead of 429s
+        # (rate limiting has its own unit tests).
+        run: |
+          hash=$(printf '%s' "$CI_API_KEY" | sha256sum | cut -d' ' -f1)
+          docker run -d --name api -p 8000:8000 \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+            -e FRAUDGUARD_API_KEY_HASHES="$hash" -e FRAUDGUARD_ENABLE_DOCS=true \
+            -e FRAUDGUARD_RATE_LIMIT_PER_MINUTE=100000 \
+            "${IMAGE_NAME}:ci"
+          for _ in $(seq 1 30); do curl -sf localhost:8000/ready && break; sleep 1; done
+          curl -sf localhost:8000/ready
+      - name: smoke test
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/v1/predict \
+            -H 'content-type: application/json' -d '{}')
+          test "$code" = "401"
+          curl -sf -X POST localhost:8000/v1/predict -H "X-API-Key: $CI_API_KEY" \
+            -H 'content-type: application/json' \
+            -d '{"amount":899.0,"hour":3,"merchant_category":"electronics","distance_from_home_km":420.0,"card_present":false,"is_foreign":true,"txn_count_24h":8,"avg_amount_30d":55.0,"account_age_days":120,"new_device":true}' \
+            | tee /dev/stderr | jq -e '.is_fraud == true'
+      - name: DAST (OWASP ZAP API scan, authenticated)
+        uses: zaproxy/action-api-scan@5158fe4d9d8fcc75ea204db81317cce7f9e5453d # v0.10.0
+        env:
+          ZAP_AUTH_HEADER: X-API-Key
+          ZAP_AUTH_HEADER_VALUE: ${{ env.CI_API_KEY }}
+        with:
+          target: http://localhost:8000/openapi.json
+          format: openapi
+          rules_file_name: .zap/rules.tsv
+          cmd_options: -a
+          fail_action: true
+          allow_issue_writing: false
+          artifact_name: zap-report
+      - name: container logs
+        if: always()
+        run: docker logs api | tail -50
+      - name: export image for publish job
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save "${IMAGE_NAME}:ci" | gzip > image.tar.gz
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image.tar.gz
+          retention-days: 1
+
+  publish:
+    name: publish + sign (Cosign keyless)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # OIDC token for keyless Sigstore signing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom.spdx.json
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: push the exact image that was scanned
+        id: push
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          gunzip -c image.tar.gz | docker load
+          docker tag "${IMAGE_NAME}:ci" "$repo:sha-${GITHUB_SHA::12}"
+          docker tag "${IMAGE_NAME}:ci" "$repo:latest"
+          docker push "$repo:sha-${GITHUB_SHA::12}"
+          docker push "$repo:latest"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$repo:sha-${GITHUB_SHA::12}")
+          echo "ref=$digest" >> "$GITHUB_OUTPUT"
+      - name: sign image and attach attestations
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
+          cosign attest --yes --type https://github.com/kamalesansam/fraudguard/model-manifest/v1 \
+            --predicate manifest.json "$REF"
+      - name: verify signature (what a cluster admission policy would check)
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+        run: |
+          cosign verify "$REF" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+          echo "### Published and signed" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$REF\`" >> "$GITHUB_STEP_SUMMARY"

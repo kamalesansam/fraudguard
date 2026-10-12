@@ -1,0 +1,64 @@
+# Scheduled production-monitoring job. In a real deployment the "current"
+# batch would be last week's logged requests plus any labels that arrived;
+# here a drifted batch is simulated so the alert path is exercised end to end.
+# A drift alert fails the job, which notifies the repo owners.
+
+name: drift-monitor
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      drift:
+        description: "Covariate shift strength (0-1)"
+        default: "0.8"
+      concept_drift:
+        description: "Inject the unseen fraud pattern"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DRIFT: ${{ inputs.drift || '0.8' }}
+      CONCEPT: ${{ inputs.concept_drift && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen --all-extras
+      - name: rebuild the production model
+        run: uv run dvc repro
+      - name: simulate this week's production batch
+        run: |
+          flag=""; [ "$CONCEPT" = "true" ] && flag="--concept-drift"
+          uv run fraudguard generate --out data/production/current.csv \
+            --n-rows 10000 --seed "$(date +%U)" --drift "$DRIFT" $flag
+      - name: drift check (exit 2 = retraining required)
+        run: uv run fraudguard drift data/production/current.csv --html reports/drift.html
+      - name: report
+        if: always()
+        run: |
+          {
+            echo "### Drift report"
+            echo '```json'
+            jq '{drifted_share, dataset_drift, prediction_drift, performance, alert}' reports/drift.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: drift-report
+          path: |
+            reports/drift.json
+            reports/drift.html

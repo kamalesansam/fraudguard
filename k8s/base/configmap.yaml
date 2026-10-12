@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraudguard-config
+  namespace: fraudguard
+data:
+  FRAUDGUARD_RATE_LIMIT_PER_MINUTE: "300"
+  FRAUDGUARD_ENABLE_DOCS: "false"

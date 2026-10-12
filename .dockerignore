@@ -1,0 +1,11 @@
+# Allowlist: only what the inference image needs enters the build context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!artifacts/model/model.skops
+!artifacts/model/manifest.json
+!artifacts/model/MODEL_CARD.md
+**/__pycache__
+**/*.pyc

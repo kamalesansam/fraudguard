@@ -1,0 +1,22 @@
+# GitOps: Argo CD keeps the cluster in sync with k8s/overlays/prod on main.
+# Drift between git and the cluster is reverted automatically (selfHeal).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fraudguard
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kamalesansam/fraudguard.git
+    targetRevision: main
+    path: k8s/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: fraudguard
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

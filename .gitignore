@@ -1,0 +1,26 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.sarif
+openapi.json
+sbom*.json
+
+# Pipeline outputs (reproduced by `dvc repro`, never committed)
+/data/
+/artifacts/
+mlflow.db
+mlruns/
+mlartifacts/
+reports/drift*.json
+reports/*.html
+
+# Local secrets
+.env
+*.key
+*.pem

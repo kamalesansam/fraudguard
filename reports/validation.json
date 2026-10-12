@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "n_rows": 60000,
+  "fraud_rate": 0.0205,
+  "duplicate_share": 0.0,
+  "errors": []
+}

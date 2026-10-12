@@ -1,0 +1,42 @@
+# Single source of truth for the pipeline. DVC tracks every key here,
+# so changing a value invalidates exactly the stages that depend on it.
+
+seed: 42
+
+generate:
+  n_rows: 60000
+  fraud_rate_target: 0.02
+
+validate:
+  # Label-rate band: a fraud rate outside this range blocks the pipeline.
+  # Catches broken joins and crude label poisoning before training.
+  fraud_rate_min: 0.005
+  fraud_rate_max: 0.06
+  max_duplicate_share: 0.001
+
+split:
+  test_size: 0.2
+  val_size: 0.1
+
+train:
+  learning_rate: 0.08
+  max_iter: 400
+  max_leaf_nodes: 31
+  min_samples_leaf: 40
+  l2_regularization: 1.0
+  early_stopping: true
+
+evaluate:
+  # The decision threshold is picked on the validation split to hit this precision.
+  target_precision: 0.80
+  # Quality gate. If the test split misses any of these, `dvc repro` fails
+  # and nothing downstream (packaging, image build, signing) runs.
+  gate:
+    min_roc_auc: 0.95
+    min_pr_auc: 0.70
+    min_recall_at_threshold: 0.55
+    max_slice_recall_gap: 0.30
+
+drift:
+  psi_threshold: 0.2
+  max_drifted_share: 0.15  # alert when 2+ of the 10 raw features drift

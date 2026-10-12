@@ -1,0 +1,40 @@
+groups:
+  - name: fraudguard
+    rules:
+      - alert: FraudGuardHighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(fraudguard_request_latency_seconds_bucket{path="/v1/predict"}[5m]))) > 0.25
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: p95 prediction latency above 250 ms
+
+      - alert: FraudGuardAuthFailureSpike
+        expr: sum(rate(fraudguard_auth_failures_total[5m])) > 1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: More than 1 rejected API key per second (credential stuffing or leaked client config)
+
+      - alert: FraudGuardRateLimited
+        expr: sum(rate(fraudguard_rate_limited_total[5m])) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Clients hitting the rate limit (abuse, scraping, or model-extraction probing)
+
+      - alert: FraudGuardFraudRateShift
+        # Share of transactions flagged; training baseline is ~2.5%.
+        expr: |
+          sum(rate(fraudguard_predictions_total{decision="fraud"}[1h]))
+            / sum(rate(fraudguard_predictions_total[1h])) > 0.08
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: Flag rate far above baseline (prediction drift, attack wave, or upstream data bug)
+
+      - alert: FraudGuardServerErrors
+        expr: sum(rate(fraudguard_requests_total{status=~"5.."}[5m])) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: The API is returning 5xx responses

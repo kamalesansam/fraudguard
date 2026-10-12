@@ -1,0 +1,15 @@
+# Accepted findings for the *pipeline* extra only. The serving image is audited
+# with no exceptions. Each entry: ID, reason, owner, review-by date.
+# Re-evaluate on every Dependabot bump; remove an entry as soon as a fix ships.
+
+# diskcache 5.6.3 (via dvc-data): unsafe pickle deserialization of cache files.
+# Exploitable only by someone who can already write to DVC's local cache dir.
+# CI runners are ephemeral and the package is absent from the inference image.
+# No fixed version published. Review by 2027-01-31.
+PYSEC-2026-2447
+
+# nltk 3.10.3 (via evidently): path traversal in NLTK model-artifact APIs
+# (TransitionParser, PerceptronTagger, ...). FraudGuard never calls NLTK; it is
+# a transitive dependency of Evidently's text metrics and absent from the
+# inference image. No fixed version published. Review by 2027-01-31.
+PYSEC-2026-3740

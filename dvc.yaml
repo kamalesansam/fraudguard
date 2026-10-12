@@ -1,0 +1,78 @@
+# Reproducible pipeline: `uv run dvc repro`
+# A non-zero exit in validate or evaluate stops everything downstream,
+# so an unvalidated dataset or an under-performing model can never be packaged.
+stages:
+  generate:
+    cmd: fraudguard generate
+    deps:
+      - src/fraudguard/data/generate.py
+    params:
+      - seed
+      - generate
+    outs:
+      - data/raw/transactions.csv
+
+  validate:
+    cmd: fraudguard validate
+    deps:
+      - data/raw/transactions.csv
+      - src/fraudguard/data/validate.py
+    params:
+      - validate
+    metrics:
+      - reports/validation.json:
+          cache: false
+
+  split:
+    cmd: fraudguard split
+    deps:
+      - data/raw/transactions.csv
+      - reports/validation.json
+    params:
+      - seed
+      - split
+    outs:
+      - data/processed
+
+  train:
+    cmd: fraudguard train
+    deps:
+      - data/processed/train.csv
+      - src/fraudguard/features.py
+      - src/fraudguard/train.py
+      - src/fraudguard/integrity.py
+    params:
+      - seed
+      - train
+    outs:
+      - artifacts/model/model.skops
+
+  evaluate:
+    cmd: fraudguard evaluate
+    deps:
+      - artifacts/model/model.skops
+      - data/processed/val.csv
+      - data/processed/test.csv
+      - src/fraudguard/evaluate.py
+    params:
+      - evaluate
+    metrics:
+      - reports/metrics.json:
+          cache: false
+    plots:
+      - reports/pr_curve.json:
+          cache: false
+          x: recall
+          y: precision
+
+  package:
+    cmd: fraudguard package
+    deps:
+      - artifacts/model/model.skops
+      - reports/metrics.json
+      - src/fraudguard/package.py
+    outs:
+      - artifacts/model/manifest.json:
+          cache: false
+      - artifacts/model/MODEL_CARD.md:
+          cache: false

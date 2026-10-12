@@ -1,0 +1,160 @@
+schema: '2.0'
+stages:
+  generate:
+    cmd: fraudguard generate
+    deps:
+    - path: src/fraudguard/data/generate.py
+      hash: md5
+      md5: 4a408dfb9b284041905fb5aceeb8d72e
+      size: 7679
+    params:
+      params.yaml:
+        generate:
+          n_rows: 60000
+          fraud_rate_target: 0.02
+        seed: 42
+    outs:
+    - path: data/raw/transactions.csv
+      hash: md5
+      md5: 0c79a7af68f8f2c1058962bf01e021fa
+      size: 3454151
+  validate:
+    cmd: fraudguard validate
+    deps:
+    - path: data/raw/transactions.csv
+      hash: md5
+      md5: 0c79a7af68f8f2c1058962bf01e021fa
+      size: 3454151
+    - path: src/fraudguard/data/validate.py
+      hash: md5
+      md5: 6bd5912fe501fa826699f71861be81c5
+      size: 3128
+    params:
+      params.yaml:
+        validate:
+          fraud_rate_min: 0.005
+          fraud_rate_max: 0.06
+          max_duplicate_share: 0.001
+    outs:
+    - path: reports/validation.json
+      hash: md5
+      md5: 5e44ccfb39fbdca32c1c529ba1897d51
+      size: 106
+  split:
+    cmd: fraudguard split
+    deps:
+    - path: data/raw/transactions.csv
+      hash: md5
+      md5: 0c79a7af68f8f2c1058962bf01e021fa
+      size: 3454151
+    - path: reports/validation.json
+      hash: md5
+      md5: 5e44ccfb39fbdca32c1c529ba1897d51
+      size: 106
+    params:
+      params.yaml:
+        seed: 42
+        split:
+          test_size: 0.2
+          val_size: 0.1
+    outs:
+    - path: data/processed
+      hash: md5
+      md5: 3f7d367cfcf760a41b93bb56d697928b.dir
+      size: 3454465
+      nfiles: 3
+  train:
+    cmd: fraudguard train
+    deps:
+    - path: data/processed/train.csv
+      hash: md5
+      md5: 7911bbe836edaf6999d9d3141f9b27f3
+      size: 2417932
+    - path: src/fraudguard/features.py
+      hash: md5
+      md5: c4f4b591b4334bbd513bef7b9b55e1cc
+      size: 1865
+    - path: src/fraudguard/integrity.py
+      hash: md5
+      md5: fab656b5eec656340fd289c793060740
+      size: 4277
+    - path: src/fraudguard/train.py
+      hash: md5
+      md5: 24cc28ec9f1b3b69e625c609adc34008
+      size: 1617
+    params:
+      params.yaml:
+        seed: 42
+        train:
+          learning_rate: 0.08
+          max_iter: 400
+          max_leaf_nodes: 31
+          min_samples_leaf: 40
+          l2_regularization: 1.0
+          early_stopping: true
+    outs:
+    - path: artifacts/model/model.skops
+      hash: md5
+      md5: 8652362cac00815f0773030c87db1a24
+      size: 556179
+  evaluate:
+    cmd: fraudguard evaluate
+    deps:
+    - path: artifacts/model/model.skops
+      hash: md5
+      md5: 8652362cac00815f0773030c87db1a24
+      size: 556179
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 6c1dcad1cd8ccad13a3895cff4c21254
+      size: 691250
+    - path: data/processed/val.csv
+      hash: md5
+      md5: e414b1115cbdb3a992d3663ded68ab52
+      size: 345283
+    - path: src/fraudguard/evaluate.py
+      hash: md5
+      md5: 36a6078f6569094690daae385286a589
+      size: 3300
+    params:
+      params.yaml:
+        evaluate:
+          target_precision: 0.8
+          gate:
+            min_roc_auc: 0.95
+            min_pr_auc: 0.7
+            min_recall_at_threshold: 0.55
+            max_slice_recall_gap: 0.3
+    outs:
+    - path: reports/metrics.json
+      hash: md5
+      md5: bbf0a416c81d6a8d98dd8cf6c90dfb34
+      size: 362
+    - path: reports/pr_curve.json
+      hash: md5
+      md5: 0c52cd03b4cff4b63d10044fa3587017
+      size: 5402
+  package:
+    cmd: fraudguard package
+    deps:
+    - path: artifacts/model/model.skops
+      hash: md5
+      md5: 8652362cac00815f0773030c87db1a24
+      size: 556179
+    - path: reports/metrics.json
+      hash: md5
+      md5: bbf0a416c81d6a8d98dd8cf6c90dfb34
+      size: 362
+    - path: src/fraudguard/package.py
+      hash: md5
+      md5: 54c1fe1c57faed15139a12292a17d910
+      size: 5645
+    outs:
+    - path: artifacts/model/MODEL_CARD.md
+      hash: md5
+      md5: 3f0f3c59a9ec65af063e945cce5e6a98
+      size: 1519
+    - path: artifacts/model/manifest.json
+      hash: md5
+      md5: fcf76c92295ac249eb5dddff9dd7232b
+      size: 1721

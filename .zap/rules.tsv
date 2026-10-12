@@ -1,0 +1,13 @@
+# ZAP API-scan rule overrides. Format: <rule id>\t<IGNORE|INFO|WARN|FAIL>\t<reason>
+# Injection classes fail the build outright.
+40018	FAIL	SQL Injection
+40012	FAIL	Cross Site Scripting (Reflected)
+40014	FAIL	Cross Site Scripting (Persistent)
+90019	FAIL	Server Side Code Injection
+90020	FAIL	Remote OS Command Injection
+40009	FAIL	Server Side Include
+6	FAIL	Path Traversal
+# Expected for a JSON API, reviewed and accepted:
+10049	IGNORE	Non-storable content: Cache-Control no-store is set on purpose
+90005	IGNORE	Sec-Fetch-* are browser request headers; API clients do not send them
+100000	IGNORE	Client error codes (401/413/422) are the intended responses to fuzzed input

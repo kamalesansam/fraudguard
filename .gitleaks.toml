@@ -1,0 +1,13 @@
+# Gitleaks config: default rules plus a narrow allowlist for values that are
+# deliberately public (documented demo key, its digest). Allowlist exact
+# values, never whole files, so a real secret in the same file still fails CI.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented local demo API key and its SHA-256 digest"
+regexTarget = "secret"
+regexes = [
+  '''^local-dev-key$''',
+  '''^ed5a18fb8f807f996d649e379d3f35f39c543a91bdbf88c492f2ebd10d4df86c$''',
+]
