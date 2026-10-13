@@ -172,7 +172,8 @@ pre-provisioned):
 make up             # API :8000, Prometheus :9090, Grafana :3000
 ```
 
-Verify a published image:
+Verify a published image (needs cosign v3+; signatures are stored as OCI
+referrers in the Sigstore bundle format, which cosign v2 does not read):
 
 ```bash
 cosign verify ghcr.io/kamalesansam/fraudguard:latest \
