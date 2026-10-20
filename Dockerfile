@@ -5,7 +5,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.11.25@sha256:1e3808aa9023d0980e7c15b1fa7c1ac16ff35925780cf5c459858b2d693f01a9 AS uv
 
-FROM python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS build
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402 AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -18,7 +18,7 @@ RUN uv sync --frozen --no-dev --extra serve --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev --extra serve --no-editable
 
-FROM python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89 AS runtime
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402 AS runtime
 LABEL org.opencontainers.image.title="fraudguard" \
       org.opencontainers.image.description="Fraud scoring API with a verified model artifact" \
       org.opencontainers.image.source="https://github.com/kamalesansam/fraudguard" \
